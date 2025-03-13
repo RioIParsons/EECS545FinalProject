@@ -1,5 +1,9 @@
+import torch
+import torch.nn as nn
 from abc import ABC, abstractmethod
 import numpy as np
+import utils
+import dataset
 
 
 class Model():
@@ -16,43 +20,51 @@ class Model():
         
     
 class KalmanFilter(Model):
-    def train(self, neural, emg):
+    def __init__(self):
+        self.A = None
+        self.C = None
+        self.W = None
+        self.Q = None
+        
+    def train(self, X, Y):
         """Train the Kalman Filter
 
         Args:
-            neural (np array): Neural data, shape [timepoints, features]
-            emg (np array): Neural data, shape [timepoints, kinematic outputs]
+            X (np array): Neural data, shape [timepoints, features]
+            Y (np array): Neural data, shape [timepoints, kinematic outputs]
             
         Returns: 
             None
         """
-        ## I'm using an old version of a kalman filter I have, so the transposes/shapes and variable names are a bit janky
-        Y = neural.T
-        X = emg.T
-        X = XT
         
-        XT = np.transpose(X)
+        if self.A is not None: 
+            raise ValueError("Tried to train_model a model that's already trained")
+        
+        ## I'm using an old version of a kalman filter I have, so the transposes/shapes are a bit janky
+        Y = Y.T
+        X = X.T
+        
+        YT = np.transpose(Y)
         
         ## Calculate A
-        a = X[:, 1:] @ XT[:-1, :]
-        A = (X[:, 1:] @ XT[:-1, :]) @ np.linalg.pinv(X[:, 0:-1] @ XT[0:-1, :])
+        A = (Y[:, 1:] @ YT[:-1, :]) @ np.linalg.pinv(Y[:, 0:-1] @ YT[0:-1, :])
         ## Calculate C 
-        C = Y @ XT @ np.linalg.pinv(X @ XT)
+        C = X @ YT @ np.linalg.pinv(YT @ YT)
         
         # Find W 
-        w = X[:, 1:] - A @ X[:, :-1]
-        W = (w @ np.transpose(w)) / (np.shape(X)[1] - 1)
+        w = Y[:, 1:] - A @ Y[:, :-1]
+        W = (w @ np.transpose(w)) / (np.shape(Y)[1] - 1)
 
         # Find Q
-        q = Y - C @ X
-        Q = (q @ np.transpose(q)) / (np.shape(X)[1])
+        q = X - C @ Y
+        Q = (q @ np.transpose(q)) / (np.shape(Y)[1])
         
         self.A = A
         self.C = C
         self.W = W
         self.Q = Q
         
-    def run_model(self, neural, y_init):
+    def run(self, X, y_init):
         """Run the Kalman Filter
 
         Args:
@@ -62,48 +74,60 @@ class KalmanFilter(Model):
         Returns: 
             yhat (np array): Predictions, shape [timepoints, kinematic outputs]
         """
-        X = neural.T
+        if X.shape[0] < X.shape[1]:
+            raise ValueError(f"X.shape[0] should be larger than X.shape[1], x shape:{X.shape}")
+       
+        X = X.T
         intl = y_init.T
         
         m = np.shape(intl)[0]
         k = np.shape(y_init)[1]
-        X_corr = np.empty((m,k))
+        y_pred = np.empty((m,k))
         
-        X_corr[:, 0] = y_init
+        y_pred[:, 0] = y_init
             
         Pt = self.W
         for i in range(1, k):
-            xlast = self.A @ X_corr[:, i-1]
+            ylast = self.A @ y_pred[:, i-1]
             plast = self.A @ Pt @ self.A.T + self.W
-            # Kt = plast @ self.C.T @ utils.inverse_singular(self.C @ plast @ self.C.T + self.Q)
             Kt = plast @ self.C.T @ np.linalg.pinv(self.C @ plast @ self.C.T + self.Q)
-            X_corr[:, i] = xlast +Kt @(Y[:, i] - self.C @ xlast)
+            y_pred[:, i] = ylast + Kt @(X[:, i] - self.C @ ylast)
             Pt = (np.eye(self.C.shape[1]) - Kt @ self.C) @ plast
             
-        yhat = X_corr.T
+        yhat = y_pred.T
         
         return yhat
     
+  
 class RidgeRegression(Model):
-    def __init__(self, lamda):
-        self.lamda = lamda
+    def __init__(self, lbda = None):
+        self.theta = None
+        self.lbda = lbda
         
-    def train(self, neural, emg):
-        raise NotImplementedError
-    
-    def run_model(self, neural, y_init):
-        raise NotImplementedError
-
-class LSTM(Model):
-    def __init__(self):
-        raise NotImplementedError
+    def train(self, X, Y):
+        if self.theta is not None: 
+            raise ValueError("Tried to train_model a model that's already trained")
         
-    def train(self, neural, emg):
-        raise NotImplementedError
+        if self.lbda is None:
+            self.lbda = 1.0
+            
+        if self.intercept:
+            X = np.concatenate((X, np.ones((X.shape[0], 1))), axis=1)
+        self.theta, _, _, _ = np.linalg.lstsq(np.matmul(X.T, X) + self.lbda*np.eye(X.shape[1]), np.matmul(X.T, Y))
     
-    def run_model(self, neural, y_init):
-        raise NotImplementedError
-    
+        
+    def run(self, X, y_init):
+        if X.shape[0] < X.shape[1]:
+            raise ValueError(f"X.shape[0] should be larger than X.shape[1], x shape:{X.shape}")
+       
+        if self.intercept:
+            X = np.concatenate((X, np.ones((X.shape[0], 1))), axis = 1)
+        
+        yhat = np.matmul(X, self.theta)
+        
+        return yhat
+        
+   
 class MLP(Model):
     def __init__(self):
         raise NotImplementedError
