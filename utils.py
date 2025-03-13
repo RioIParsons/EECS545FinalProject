@@ -3,6 +3,8 @@ import torch
 import numpy as np
 from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
+import dataset
+import models
 
 ## Metrics
 class MSE():
@@ -22,7 +24,6 @@ class corr():
             for i in range(yhat.shape[1]):
                 corrs.append(np.corrcoef(yhat[:, i], y[:, i])[0, 1])
             
-            # return(np.mean(np.array(corrs)))
             return corrs
         else:
             return np.corrcoef(yhat, y)[0, 1]
@@ -43,16 +44,23 @@ class R2():
             return r2_score(yhat, y)
         
         
-def plot_predictions(y, yhat, title, labels, legend = True, perf = True, metric = corr()):
-    plt.figure(figsize = [15, 10])
+def plot_predictions(y, yhat, title, legend = True, perf = True, metric = corr()):
+    labels = ['First Finger Position', 'Second Finger Position', 'First Finger Velocity', 'Second Finger Velocity']
     nplots = yhat.shape[1]
+    if nplots == 5: 
+        nplots = 4
+    
+    plt.figure(figsize = [15, 10])
     plt.suptitle(title)
+    
     if nplots == 2:
         sp1 = 1
         sp2 = 2
-    elif nplots ==4 or nplots == 5:
+    elif nplots ==4:
         sp1 = 2
         sp2 = 2
+        
+
     for i in range(nplots):
         plt.subplot(sp1, sp2, i+1) 
        
@@ -102,3 +110,42 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)  # For multi-GPU setups 
+        
+def get_lbda(X, Y, intercept, lbda_start = 0, lbda_end = 50, lbda_step = 5, metric = corr()):
+    
+    X_train, Y_train, X_val, Y_val = dataset.get_val_set(X, Y)
+    
+    lbdas = np.arange(lbda_start, lbda_end + lbda_step, lbda_step)
+    perfs = np.empty([len(lbdas), Y_train.shape[1]])
+    for i, lbda in enumerate(lbdas): 
+        model = models.RidgeRegression(lbda, intercept)
+        model.train(X_train, Y_train)
+        yhat = model.run(X_val, None)
+        perfs[i, :] = metric(Y_val, yhat)
+        
+    plt.figure()
+    plt.suptitle("Ridge regression performance vs Lambda value")
+    
+    nplots = perfs.shape[1]
+    if nplots == 2:
+        sp1 = 1
+        sp2 = 2
+    elif nplots == 4:
+        sp1 = 2
+        sp2 = 2
+        
+
+    for i in range(nplots):
+        plt.subplot(sp1, sp2, i+1) 
+       
+        plt.plot(perfs[:, i], color = 'black')
+        plt.xlabel("Lambda")
+        plt.ylabel(f"{metric.name}")
+        plt.xticks(np.arange(len(lbdas)), lbdas)  # Custom labels
+    
+    plt.tight_layout()
+    
+    return lbdas[np.argmax(perfs, axis = 0)[0]]
+
+
+        

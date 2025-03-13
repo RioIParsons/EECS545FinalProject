@@ -21,6 +21,7 @@ class Model():
     
 class KalmanFilter(Model):
     def __init__(self):
+        self.name = "Kalman Filter"
         self.A = None
         self.C = None
         self.W = None
@@ -49,7 +50,7 @@ class KalmanFilter(Model):
         ## Calculate A
         A = (Y[:, 1:] @ YT[:-1, :]) @ np.linalg.pinv(Y[:, 0:-1] @ YT[0:-1, :])
         ## Calculate C 
-        C = X @ YT @ np.linalg.pinv(YT @ YT)
+        C = X @ YT @ np.linalg.pinv(Y @ YT)
         
         # Find W 
         w = Y[:, 1:] - A @ Y[:, :-1]
@@ -78,16 +79,15 @@ class KalmanFilter(Model):
             raise ValueError(f"X.shape[0] should be larger than X.shape[1], x shape:{X.shape}")
        
         X = X.T
-        intl = y_init.T
         
-        m = np.shape(intl)[0]
-        k = np.shape(y_init)[1]
-        y_pred = np.empty((m,k))
+        t = np.shape(X)[1]
+        f = np.shape(y_init)[0]
+        y_pred = np.empty([f, t])
         
         y_pred[:, 0] = y_init
             
         Pt = self.W
-        for i in range(1, k):
+        for i in range(1, t):
             ylast = self.A @ y_pred[:, i-1]
             plast = self.A @ Pt @ self.A.T + self.W
             Kt = plast @ self.C.T @ np.linalg.pinv(self.C @ plast @ self.C.T + self.Q)
@@ -100,16 +100,18 @@ class KalmanFilter(Model):
     
   
 class RidgeRegression(Model):
-    def __init__(self, lbda = None):
+    def __init__(self, lbda = 'auto', intercept = True):
+        self.name = "Ridge Regression"
         self.theta = None
         self.lbda = lbda
+        self.intercept = intercept
         
     def train(self, X, Y):
         if self.theta is not None: 
             raise ValueError("Tried to train_model a model that's already trained")
         
-        if self.lbda is None:
-            self.lbda = 1.0
+        if self.lbda == 'auto':
+            self.lbda = utils.get_lbda(X, Y, self.intercept)
             
         if self.intercept:
             X = np.concatenate((X, np.ones((X.shape[0], 1))), axis=1)

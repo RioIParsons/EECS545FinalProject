@@ -1,0 +1,19 @@
+name: emg_decoding
+channels:
+  - conda-forge
+  - defaults
+  - pip
+dependencies:
+  # - numpy >= 1.26.4
+  - pip
+  - matplotlib
+  - pip: 
+    - torch >= 2.1.2
+    - numpy
+    - scikit-learn
+    - scipy
+    - pandas
+
+
+
+
