@@ -44,13 +44,13 @@ class R2():
             return r2_score(yhat, y)
         
         
-def plot_predictions(y, yhat, title, legend = True, perf = True, metric = corr()):
+def plot_predictions(y, yhat, title, perf = True, metric = corr(), color = 'r', end = -1):
     labels = ['First Finger Position', 'Second Finger Position', 'First Finger Velocity', 'Second Finger Velocity']
     nplots = yhat.shape[1]
     if nplots == 5: 
         nplots = 4
     
-    plt.figure(figsize = [15, 10])
+    plt.figure(figsize = [10, 8])
     plt.suptitle(title)
     
     if nplots == 2:
@@ -64,15 +64,10 @@ def plot_predictions(y, yhat, title, legend = True, perf = True, metric = corr()
     for i in range(nplots):
         plt.subplot(sp1, sp2, i+1) 
        
-        if np.ptp(yhat[:, i]) > np.ptp(y[:, i]):
-            plt.plot(yhat[:, i], color = 'r', label = "Predicted")
-            plt.plot(y[:, i], color = 'b', label = "Measured" )
-        else:
-            plt.plot(y[:, i], color = 'b', label = "Measured" )
-            plt.plot(yhat[:, i], color = 'r', label = "Predicted")
-
-        if legend:
-            plt.legend(loc= "upper left")
+        plt.plot(yhat[:end, i], color = color, label = "Predicted")
+        plt.plot(y[:end, i], color = 'black', label = "Measured" )
+       
+        plt.legend(loc= "upper left")
         plt.title(labels[i])
         Ylim = getYLim([y[:, i], yhat[:, i]]) 
         location = (2, Ylim[0])
@@ -85,6 +80,8 @@ def plot_predictions(y, yhat, title, legend = True, perf = True, metric = corr()
             plt.ylabel("Position")
         elif i >= 2:
             plt.ylabel("Velocity")
+    plt.tight_layout()
+
             
 
 
@@ -118,7 +115,7 @@ def set_seed(seed):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)  # For multi-GPU setups 
         
-def get_lbda(X, Y, intercept, lbda_start = 0, lbda_end = 50, lbda_step = 5, metric = corr()):
+def get_lbda(X, Y, intercept, lbda_start = 0, lbda_end = 5, lbda_step = 5, metric = corr()):
     
     X_train, Y_train, X_val, Y_val = dataset.get_val_set(X, Y)
     
@@ -126,8 +123,8 @@ def get_lbda(X, Y, intercept, lbda_start = 0, lbda_end = 50, lbda_step = 5, metr
     perfs = np.empty([len(lbdas), Y_train.shape[1]])
     for i, lbda in enumerate(lbdas): 
         model = models.RidgeRegression(lbda, intercept)
-        model.train(X_train, Y_train)
-        yhat = model.run(X_val, None)
+        model.train_model(X_train, Y_train)
+        yhat = model.run_model(X_val, None)
         perfs[i, :] = metric(Y_val, yhat)
         
     plt.figure()
@@ -151,8 +148,62 @@ def get_lbda(X, Y, intercept, lbda_start = 0, lbda_end = 50, lbda_step = 5, metr
         plt.xticks(np.arange(len(lbdas)), lbdas)  # Custom labels
     
     plt.tight_layout()
+    best_lbdas = lbdas[np.argmax(perfs, axis = 0)]
+    lbda = np.mean(best_lbdas)
     
-    return lbdas[np.argmax(perfs, axis = 0)[0]]
+    return lbda
 
 
+def plot_train_val_loss(train_losses,  val_losses):
+    plt.figure()
+    plt.plot(train_losses, label = "Train Losses")
+    plt.plot(val_losses, label = "Val Losses")
+    plt.legend()
+    plt.ylabel("MSE loss")
+    plt.xlabel("Epochs")
+    
+def compare_perfs(Y, yhats, model_labels, colors, start = 0, end = -1):
+    labels = ['First Finger Position', 'Second Finger Position', 'First Finger Velocity', 'Second Finger Velocity']
+    nplots = Y.shape[1]
+    if nplots == 5: 
+        nplots = 4
+    
+    plt.figure(figsize = [15, 10])
+    plt.suptitle("Comparison of Model Performances")
+    
+    if nplots == 2:
+        sp1 = 1
+        sp2 = 2
+    elif nplots ==4:
+        sp1 = 2
+        sp2 = 2
         
+
+    for i in range(nplots):
+        plt.subplot(sp1, sp2, i+1) 
+       
+        for j in range(len(yhats)):
+            plt.plot(yhats[j][start:end, i], color = colors[j], label = model_labels[j] )
+            
+        plt.plot(Y[start:end, i], color = 'black', label = "Ground Truth")
+
+        plt.title(labels[i])
+        data = [d[:, i] for d in yhats]
+        data.append(Y[:, :i])
+
+        plt.xlabel("Timepoint")
+        if i < 2:
+            plt.ylabel("Position")
+        elif i >= 2:
+            plt.ylabel("Velocity")
+            
+    model_labels.append('Ground Truth')
+    plt.figlegend(
+        model_labels,
+        loc='right',
+        bbox_to_anchor=(1.05, 0.48),  # Adjust position here
+        frameon=True
+    )
+
+    # Adjust layout to prevent overlap
+    plt.tight_layout(rect=[0, 0, 0.85, 0.95])  # Shrink plot area to leave space

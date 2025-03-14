@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
 from abc import ABC, abstractmethod
 import numpy as np
 import utils
@@ -11,11 +13,11 @@ class Model():
         raise NotImplementedError
     
     @abstractmethod
-    def train():
+    def train_model():
         raise NotImplementedError
     
     @abstractmethod
-    def run():
+    def run_model():
         raise NotImplementedError
         
     
@@ -27,7 +29,7 @@ class KalmanFilter(Model):
         self.W = None
         self.Q = None
         
-    def train(self, X, Y):
+    def train_model(self, X, Y):
         """Train the Kalman Filter
 
         Args:
@@ -65,7 +67,7 @@ class KalmanFilter(Model):
         self.W = W
         self.Q = Q
         
-    def run(self, X, y_init):
+    def run_model(self, X, y_init):
         """Run the Kalman Filter
 
         Args:
@@ -101,24 +103,29 @@ class KalmanFilter(Model):
   
 class RidgeRegression(Model):
     def __init__(self, lbda = 'auto', intercept = True):
-        self.name = "Ridge Regression"
+        if lbda == 1:
+            self.name = "Linear Regression"
+        else:
+            self.name = f"Ridge Regression, lambda = {lbda}"
         self.theta = None
         self.lbda = lbda
         self.intercept = intercept
         
-    def train(self, X, Y):
+    def train_model(self, X, Y, plot = False):
         if self.theta is not None: 
             raise ValueError("Tried to train_model a model that's already trained")
         
         if self.lbda == 'auto':
-            self.lbda = utils.get_lbda(X, Y, self.intercept)
+            self.lbda = utils.get_lbda(X, Y, self.intercept, plot)
+            self.name = f"Ridge Regression, lambda = {self.lbda}"
             
         if self.intercept:
             X = np.concatenate((X, np.ones((X.shape[0], 1))), axis=1)
+             
         self.theta, _, _, _ = np.linalg.lstsq(np.matmul(X.T, X) + self.lbda*np.eye(X.shape[1]), np.matmul(X.T, Y))
     
         
-    def run(self, X, y_init):
+    def run_model(self, X, y_init):
         if X.shape[0] < X.shape[1]:
             raise ValueError(f"X.shape[0] should be larger than X.shape[1], x shape:{X.shape}")
        
@@ -128,8 +135,116 @@ class RidgeRegression(Model):
         yhat = np.matmul(X, self.theta)
         
         return yhat
+ 
+class LSTM(nn.Module):
+    def __init__(self, hidden_size = 150, num_layers = 2, learning_rate = 1e-4, epochs = 10, batch_size = 64, device = 'cpu'):
+        ''' 
+        Initializes a LSTM
+
+        Args:
+            hidden_size:        size of hidden state in model 
+            num_layers:         number of layers in model
+            device:             optional, specifies what device to compute on. Default is cpu.
+        Returns:
+            None
+        ''' 
+        self.name = "LSTM"
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lr = learning_rate
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.device = device
+        super().__init__()
+    
+    def train_model(self, X, Y, loss_fn = nn.MSELoss(), seed = 1, print_results = True, print_every = 2, plot = False):
+        num_inputs = X.shape[1]
+        num_outputs = Y.shape[1]
+
+        X_train, Y_train, X_val, Y_val = dataset.get_val_set(X, Y)
+
+        utils.set_seed(seed)
+
+        # Initialize LSTM and linear layers
+        self.lstm = nn.LSTM(
+            input_size=num_inputs,
+            hidden_size=self.hidden_size,
+            num_layers=self.num_layers,
+            batch_first=True
+        ).to(self.device)
         
-   
+        self.linear = nn.Linear(self.hidden_size, num_outputs).to(self.device)
+        
+        # Define optimizer
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        
+        # Convert data to tensors
+        X_train = torch.tensor(X_train, dtype=torch.float32).to(self.device)
+        Y_train = torch.tensor(Y_train, dtype=torch.float32).to(self.device)
+        train_dataset = TensorDataset(X_train, Y_train)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        
+        train_losses = []
+        val_losses = []
+        # Training loop
+        for epoch in range(self.epochs):
+            self.train()
+            total_loss = 0.0
+            for batch_X, batch_Y in train_loader:
+                optimizer.zero_grad()
+                
+                # Add sequence dimension (assuming univariate time steps)
+                batch_X = batch_X.unsqueeze(1)
+                
+                # Forward pass
+                lstm_out, _ = self.lstm(batch_X)
+                predictions = self.linear(lstm_out.squeeze(1))
+                loss = loss_fn(predictions, batch_Y)
+                
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            
+            # Validation
+            val_loss = None
+            if len(X_val) > 0:
+                self.eval()
+                with torch.no_grad():
+                    X_val_t = torch.tensor(X_val, dtype=torch.float32).to(self.device)
+                    X_val_t = X_val_t.unsqueeze(1)
+                    val_out, _ = self.lstm(X_val_t)
+                    val_pred = self.linear(val_out.squeeze(1))
+                    val_loss = loss_fn(val_pred, 
+                                    torch.tensor(Y_val, dtype=torch.float32).to(self.device)).item()
+            
+            # Print results
+            if print_results and (epoch % print_every == 0 or epoch == self.epochs-1):
+                log = f"Epoch {epoch+1}/{self.epochs} | Train Loss: {total_loss/len(train_loader):.4f}"
+                if val_loss is not None:
+                    log += f" | Val Loss: {val_loss:.4f}"
+                print(log)
+            
+            train_losses.append(total_loss/len(train_loader))
+            val_losses.append(val_loss)
+              
+        if plot:   
+            utils.plot_train_val_loss(train_losses,  val_losses)
+        
+
+
+    def run_model(self, X):
+        if self.lstm is None or self.linear is None:
+            raise RuntimeError("Model must be trained before inference")
+            
+        self.eval()
+        with torch.no_grad():
+            X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
+            X_tensor = X_tensor.unsqueeze(1)  # Add sequence dimension
+            lstm_out, _ = self.lstm(X_tensor)
+            predictions = self.linear(lstm_out.squeeze(1))
+        return predictions.cpu().numpy()
+    
 class MLP(Model):
     def __init__(self):
         raise NotImplementedError
