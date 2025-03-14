@@ -79,6 +79,13 @@ def plot_predictions(y, yhat, title, legend = True, perf = True, metric = corr()
         plt.ylim([Ylim[0]*1.1, Ylim[1]*1.1])
         if perf:
             plt.annotate(f"{metric.name}: {metric(y[:, i],yhat[:, i])}", location)
+            
+        plt.xlabel("Timepoint")
+        if i < 2:
+            plt.ylabel("Position")
+        elif i >= 2:
+            plt.ylabel("Velocity")
+            
 
 
 def getYLim(sets):
