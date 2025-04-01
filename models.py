@@ -249,21 +249,397 @@ class MLP(Model):
     def __init__(self):
         raise NotImplementedError
         
-    def train(self, neural, emg):
+    def train_model(self, X, Y):
         raise NotImplementedError
     
-    def run_model(self, neural, y_init):
+    def run_model(self, X):
         raise NotImplementedError
     
 class KalmanNet(Model):
-    def __init__(self):
-        raise NotImplementedError
+    def __init__(self, hidden_size=64, num_layers=1, learning_rate=1e-3, epochs=10, batch_size=64, device=None):
+        """
+        Initializes a KalmanNet model. Adapted from Luis Cubillos
+
+        Args:
+            hidden_size: Size of hidden states in the GRU networks
+            num_layers: Number of GRU layers
+            learning_rate: Learning rate for Adam optimizer
+            epochs: Number of training epochs
+            batch_size: Batch size for training
+            device: Optional, specifies which device to compute on. Default is cuda if available, else cpu.
+        """
+        self.name = "KalmanNet"
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lr = learning_rate
+        self.epochs = epochs
+        self.batch_size = batch_size
         
-    def train(self, neural, emg):
-        raise NotImplementedError
+        # Set device
+        if device is None:
+            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = device
+        
+        # Model components will be initialized during training
+        self.A = None  # State transition matrix
+        self.C = None  # Observation matrix
+        self.W = None  # Process noise covariance
+        self.Q = None  # Observation noise covariance
+        
+        # Neural network components
+        self.lstm = None
+        self.linear = None
+        self.model = None  # Will hold the full KalmanNet model
+        
+    def _build_model(self, input_dim, state_dim):
+        """Builds the KalmanNet model structure"""
+        in_mult_knet = 5
+        
+        # GRU to track Q
+        d_input_Q = state_dim * in_mult_knet
+        d_hidden_Q = state_dim**2
+        GRU_Q = nn.GRU(d_input_Q, d_hidden_Q).to(self.device)
+        
+        # GRU to track Sigma
+        d_input_Sigma = d_hidden_Q + state_dim * in_mult_knet
+        d_hidden_Sigma = state_dim**2
+        GRU_Sigma = nn.GRU(d_input_Sigma, d_hidden_Sigma).to(self.device)
+        
+        # GRU to track S
+        n = input_dim  # Observation dimension
+        d_input_S = n**2 + 2 * n * in_mult_knet
+        d_hidden_S = n**2
+        GRU_S = nn.GRU(d_input_S, d_hidden_S).to(self.device)
+        
+        # Feature extraction networks
+        FC5 = nn.Sequential(
+            nn.Linear(state_dim, state_dim * in_mult_knet), 
+            nn.ReLU()
+        ).to(self.device)
+        
+        FC6 = nn.Sequential(
+            nn.Linear(state_dim, state_dim * in_mult_knet), 
+            nn.ReLU()
+        ).to(self.device)
+        
+        FC7 = nn.Sequential(
+            nn.Linear(2 * n, 2 * n * in_mult_knet), 
+            nn.ReLU()
+        ).to(self.device)
+        
+        # Processing networks
+        FC1 = nn.Sequential(
+            nn.Linear(d_hidden_Sigma, n**2), 
+            nn.ReLU()
+        ).to(self.device)
+        
+        FC2 = nn.Sequential(
+            nn.Linear(d_hidden_S + d_hidden_Sigma, (d_hidden_S + d_hidden_Sigma) * in_mult_knet),
+            nn.ReLU(),
+            nn.Linear((d_hidden_S + d_hidden_Sigma) * in_mult_knet, n * state_dim),
+        ).to(self.device)
+        
+        FC3 = nn.Sequential(
+            nn.Linear(d_hidden_S + n * state_dim, state_dim**2), 
+            nn.ReLU()
+        ).to(self.device)
+        
+        FC4 = nn.Sequential(
+            nn.Linear(d_hidden_Sigma + state_dim**2, d_hidden_Sigma), 
+            nn.ReLU()
+        ).to(self.device)
+        
+        return {
+            'GRU_Q': GRU_Q,
+            'GRU_Sigma': GRU_Sigma,
+            'GRU_S': GRU_S,
+            'FC1': FC1,
+            'FC2': FC2,
+            'FC3': FC3,
+            'FC4': FC4,
+            'FC5': FC5,
+            'FC6': FC6,
+            'FC7': FC7,
+            'd_hidden_Q': d_hidden_Q,
+            'd_hidden_Sigma': d_hidden_Sigma,
+            'd_hidden_S': d_hidden_S,
+        }
     
-    def run_model(self, neural, y_init):
-        raise NotImplementedError
+    def _init_system_dynamics(self, X, Y):
+        """Initialize system dynamics matrices A, C, W, Q"""
+        # Estimate state transition matrix A
+        Y_prev = Y[:-1]
+        Y_next = Y[1:]
+        self.A = np.linalg.lstsq(Y_prev, Y_next, rcond=None)[0].T
+        self.A = torch.tensor(self.A, dtype=torch.float32).to(self.device)
+        self.A_T = self.A.T
+        
+        # Estimate observation matrix C
+        self.C = np.linalg.lstsq(Y, X, rcond=None)[0].T
+        self.C = torch.tensor(self.C, dtype=torch.float32).to(self.device)
+        self.C_T = self.C.T
+        
+        # Estimate process noise covariance W
+        Y_pred = Y_prev @ self.A.cpu().numpy().T
+        residuals = Y_next - Y_pred
+        self.W = residuals.T @ residuals / len(residuals)
+        self.W = torch.tensor(self.W, dtype=torch.float32).to(self.device)
+        
+        # Estimate observation noise covariance Q
+        X_pred = Y @ self.C.cpu().numpy().T
+        residuals = X - X_pred
+        self.Q = residuals.T @ residuals / len(residuals)
+        self.Q = torch.tensor(self.Q, dtype=torch.float32).to(self.device)
+    
+    def _init_hidden(self, batch_size, model_components):
+        """Initialize hidden states for the GRUs"""
+        # Create properly sized hidden states directly
+        h_Q = torch.eye(self.state_dim).flatten().unsqueeze(0).repeat(1, batch_size, 1).to(self.device)
+        h_Sigma = torch.zeros(1, batch_size, self.state_dim**2).to(self.device)
+        h_S = torch.eye(self.input_dim).flatten().unsqueeze(0).repeat(1, batch_size, 1).to(self.device)
+        
+        return h_Q, h_Sigma, h_S
+    
+    def _kf_step(self, x, state_prior, input_prior, state_posterior, model_components, h_Q, h_Sigma, h_S):
+        """
+        Performs one KalmanNet filtering step
+
+        Args:
+            x: Current observation
+            state_prior: Prior state estimate
+            input_prior: Prior observation estimate
+            state_posterior: Previous posterior state estimate
+            model_components: Dictionary of KalmanNet components
+            h_Q, h_Sigma, h_S: Hidden states for GRUs
+            
+        Returns:
+            state_posterior: Updated state estimate
+            h_Q, h_Sigma, h_S: Updated hidden states
+        """
+        # Feature extraction
+        obs_diff = x - input_prior
+        obs_diff = nn.functional.normalize(obs_diff, p=2, dim=1, eps=1e-12)
+
+        fw_evol_diff = state_posterior - state_prior
+        fw_evol_diff = nn.functional.normalize(fw_evol_diff, p=2, dim=1, eps=1e-12)
+
+        # Process through feature networks - shape: [batch_size, state_dim*in_mult_knet]
+        out_FC5 = model_components['FC5'](fw_evol_diff)
+
+        # For GRU input, shape should be [seq_len=1, batch_size, features]
+        out_FC5 = out_FC5.unsqueeze(0)  
+
+        # Process through Q-GRU
+        out_Q, h_Q = model_components['GRU_Q'](out_FC5, h_Q)
+
+        # Feature for sigma
+        state_diff = state_posterior - state_prior
+        state_diff = nn.functional.normalize(state_diff, p=2, dim=1, eps=1e-12)
+        out_FC6 = model_components['FC6'](state_diff)
+        out_FC6 = out_FC6.unsqueeze(0)  # [1, batch_size, features]
+
+        # Process through Sigma-GRU
+        in_Sigma = torch.cat((out_Q, out_FC6), 2)
+        out_Sigma, h_Sigma = model_components['GRU_Sigma'](in_Sigma, h_Sigma)
+
+        # Process for S-GRU
+        out_FC1 = model_components['FC1'](out_Sigma)
+
+        # Feature for S
+        in_FC7 = torch.cat((obs_diff, obs_diff), 1)  # Using obs_diff twice
+        out_FC7 = model_components['FC7'](in_FC7)
+        out_FC7 = out_FC7.unsqueeze(0)  # [1, batch_size, features]
+
+        # Process through S-GRU
+        in_S = torch.cat((out_FC1, out_FC7), 2)
+        out_S, h_S = model_components['GRU_S'](in_S, h_S)
+
+        # Compute Kalman gain
+        in_FC2 = torch.cat((out_Sigma, out_S), 2)
+        K_gain = model_components['FC2'](in_FC2)
+
+        # Reshape K_gain to have correct dimensions for matrix multiplication
+        # The shape should be [batch_size, state_dim, input_dim]
+        K_gain = K_gain.view(K_gain.shape[1], self.state_dim, self.input_dim)
+
+        # Apply Kalman gain to innovation
+        # Need to add dimension for matrix multiplication
+        obs_diff_expanded = obs_diff.unsqueeze(2)  # [batch_size, input_dim, 1]
+
+        # Result will be [batch_size, state_dim, 1]
+        innovation = torch.bmm(K_gain, obs_diff_expanded)
+
+        # Remove the last dimension to match state dimensions
+        innovation = innovation.squeeze(2)  # [batch_size, state_dim]
+
+        # Update state
+        state_posterior = state_prior + innovation
+
+        # Update hidden state for Sigma-GRU
+        # Reshape K_gain for concatenation
+        K_gain_flat = K_gain.view(1, K_gain.shape[0], -1)
+
+        in_FC3 = torch.cat((out_S, K_gain_flat), 2)
+        out_FC3 = model_components['FC3'](in_FC3)
+
+        in_FC4 = torch.cat((out_Sigma, out_FC3), 2)
+        out_FC4 = model_components['FC4'](in_FC4)
+        h_Sigma = out_FC4
+
+        return state_posterior, h_Q, h_Sigma, h_S
+    
+    def train_model(self, X, Y, loss_fn=nn.MSELoss(), seed=1, print_results=True, print_every=1):
+        """
+        Train the KalmanNet model
+
+        Args:
+            X: Neural data, shape [timepoints, features]
+            Y: Kinematic data, shape [timepoints, output_dimensions]
+            loss_fn: Loss function (default: MSELoss)
+            seed: Random seed for reproducibility
+            print_results: Whether to print training progress
+            print_every: How often to print results (in epochs)
+            
+        Returns:
+            None
+        """
+        # Set seed for reproducibility
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        
+        # Store dimensions
+        self.input_dim = X.shape[1]  # Number of neural features
+        self.state_dim = Y.shape[1]  # Number of kinematic outputs
+        
+        # Init system dynamics (A, C, W, Q matrices)
+        self._init_system_dynamics(X, Y)
+        
+        # Build KalmanNet components
+        self.model_components = self._build_model(self.input_dim, self.state_dim)
+        
+        # Convert data to PyTorch tensors
+        X_train = torch.tensor(X, dtype=torch.float32).to(self.device)
+        Y_train = torch.tensor(Y, dtype=torch.float32).to(self.device)
+        
+        # Create DataLoader for batching
+        train_dataset = torch.utils.data.TensorDataset(X_train, Y_train)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=self.batch_size, shuffle=True
+        )
+        
+        # Get all model parameters
+        params = []
+        for _, component in self.model_components.items():
+            if isinstance(component, nn.Module):
+                params.extend(list(component.parameters()))
+        
+        # Create optimizer
+        optimizer = torch.optim.Adam(params, lr=self.lr)
+        
+        # Training loop
+        for epoch in range(self.epochs):
+            epoch_loss = 0.0
+            batch_count = 0
+            
+            for batch_X, batch_Y in train_loader:
+                batch_size = batch_X.shape[0]
+                
+                # Initialize hidden states
+                h_Q, h_Sigma, h_S = self._init_hidden(batch_size, self.model_components)
+                
+                # Initialize state for first time step
+                state_posterior = batch_Y[0].unsqueeze(0).repeat(batch_size, 1)
+                
+                # Zero gradients
+                optimizer.zero_grad()
+                
+                # Total loss for this batch
+                batch_loss = 0
+                
+                # Process each time step
+                for t in range(1, min(100, len(batch_X))):  # Limit sequence length to avoid memory issues
+                    # Compute prior
+                    state_prior = torch.matmul(self.A, state_posterior.unsqueeze(-1)).squeeze(-1)
+                    input_prior = torch.matmul(self.C, state_prior.unsqueeze(-1)).squeeze(-1)
+                    
+                    # KF step
+                    state_posterior, h_Q, h_Sigma, h_S = self._kf_step(
+                        batch_X[t], 
+                        state_prior, 
+                        input_prior,
+                        state_posterior, 
+                        self.model_components,
+                        h_Q, h_Sigma, h_S
+                    )
+                    
+                    # Compute loss
+                    step_loss = loss_fn(state_posterior, batch_Y[t])
+                    batch_loss += step_loss
+                
+                # Backward pass and optimization
+                batch_loss.backward()
+                optimizer.step()
+                
+                epoch_loss += batch_loss.item()
+                batch_count += 1
+            
+            if print_results and (epoch % print_every == 0 or epoch == self.epochs - 1):
+                print(f"Epoch {epoch+1}/{self.epochs}, Loss: {epoch_loss/batch_count:.4f}")
+    
+    def run_model(self, X, y_init):
+        """
+        Run the trained KalmanNet model
+
+        Args:
+            X: Neural data, shape [timepoints, features]
+            y_init: Initial state, shape [output_dimensions]
+            
+        Returns:
+            Y_pred: Predicted states, shape [timepoints, output_dimensions]
+        """
+        if self.model_components is None or self.A is None:
+            raise RuntimeError("Model must be trained before inference")
+        
+        # Convert to tensor
+        X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
+        y_init_tensor = torch.tensor(y_init, dtype=torch.float32).to(self.device)
+        
+        # Prepare output array
+        predictions = np.zeros((X.shape[0], self.state_dim))
+        predictions[0] = y_init
+        
+        # Set model components to evaluation mode
+        for component_name, component in self.model_components.items():
+            if isinstance(component, nn.Module):
+                component.eval()
+        
+        # Initialize hidden states for a single sequence
+        h_Q, h_Sigma, h_S = self._init_hidden(1, self.model_components)
+        
+        # Initialize state
+        state_posterior = y_init_tensor.unsqueeze(0)  # Add batch dimension
+        
+        with torch.no_grad():
+            for t in range(1, len(X_tensor)):
+                # Compute prior
+                state_prior = torch.matmul(self.A, state_posterior.unsqueeze(-1)).squeeze(-1)
+                input_prior = torch.matmul(self.C, state_prior.unsqueeze(-1)).squeeze(-1)
+                
+                # KF step
+                state_posterior, h_Q, h_Sigma, h_S = self._kf_step(
+                    X_tensor[t].unsqueeze(0),  # Add batch dimension
+                    state_prior,
+                    input_prior,
+                    state_posterior,
+                    self.model_components,
+                    h_Q, h_Sigma, h_S
+                )
+                
+                # Store prediction
+                predictions[t] = state_posterior.cpu().numpy()
+        
+        return predictions
     
 
 
