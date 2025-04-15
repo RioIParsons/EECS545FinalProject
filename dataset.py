@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 def load_data(fpath = 'Z_Joker_2025-01-09_Run-002.mat', downsample = 10, velocity = True):
-    """Load the chosed data
+    """Load the chosen data
 
     Returns:
         EMG_continuous: EMG data, shape [timepoints, features]
