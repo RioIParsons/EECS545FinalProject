@@ -162,14 +162,14 @@ def plot_train_val_loss(train_losses,  val_losses):
     plt.ylabel("MSE loss")
     plt.xlabel("Epochs")
     
-def compare_perfs(Y, yhats, model_labels, colors, start = 0, end = -1):
+def compare_perfs_old(Y, yhats, model_labels, colors, start = 0, end = -1):
     labels = ['First Finger Position', 'Second Finger Position', 'First Finger Velocity', 'Second Finger Velocity']
     nplots = Y.shape[1]
     if nplots == 5: 
         nplots = 4
     
     plt.figure(figsize = [15, 10])
-    plt.suptitle("Comparison of Model Performances")
+    plt.suptitle("Comparison of Model Performances", fontsize=20)
     
     if nplots == 2:
         sp1 = 1
@@ -187,23 +187,67 @@ def compare_perfs(Y, yhats, model_labels, colors, start = 0, end = -1):
             
         plt.plot(Y[start:end, i], color = 'black', label = "Ground Truth")
 
-        plt.title(labels[i])
+        plt.title(labels[i], fontsize = 17)
         data = [d[:, i] for d in yhats]
         data.append(Y[:, :i])
 
-        plt.xlabel("Timepoint")
+        plt.xlabel("Timepoint", fontsize = 15)
         if i < 2:
-            plt.ylabel("Position")
+            plt.ylabel("Position",  fontsize = 15)
         elif i >= 2:
-            plt.ylabel("Velocity")
+            plt.ylabel("Velocity",  fontsize = 15)
             
     model_labels.append('Ground Truth')
     plt.figlegend(
         model_labels,
-        loc='right',
-        bbox_to_anchor=(1.05, 0.48),  # Adjust position here
-        frameon=True
+        # loc='right',
+        # bbox_to_anchor=(1.08, 0.48),  # Adjust position here
+        bbox_to_anchor=(.55, -.01),  # Adjust position here
+        frameon=True,
+        fontsize = 12
     )
 
     # Adjust layout to prevent overlap
     plt.tight_layout(rect=[0, 0, 0.85, 0.95])  # Shrink plot area to leave space
+    
+    
+        
+def compare_perfs(Y, yhats, model_labels, colors, start = 0, end = -1):
+    labels = ['First Finger\nPosition', 'Second Finger\nPosition']
+    ndims = 2
+
+    nplots = len(yhats)
+    assert(nplots == len(model_labels))
+    
+    fig = plt.figure(figsize = [15, 10])
+    plt.suptitle("Comparison of Model Performances", fontsize=20, fontweight='bold')
+    metric = corr()
+     
+    for i in range(nplots):
+        for j in range(ndims):
+            # print(f"i: {i*2}, j: {j%2}, total: {(i*2)+1+j%2}")
+            plt.subplot(nplots, 2, (i*2)+1+j%2) 
+        
+            plt.plot(yhats[i][start:end, j], color = colors[i], label = model_labels[i] )
+                
+            plt.plot(Y[start:end, j], color = 'black', label = "Ground Truth")
+
+            plt.title(model_labels[i], fontsize = 17, fontweight='bold')
+          
+            if i == nplots-1:
+                plt.xlabel("Timepoint", fontsize = 15)
+            # plt.ylabel(labels[j],  fontsize = 15)
+            plt.xlim([0, end-start])
+            ax =plt.gca()
+            ylims = ax.get_ylim()
+            plt.annotate(f"Correlation: {round(metric(yhats[i][start:end, j], Y[start:end, j]), 4)}", xy = [end-start-250, ylims[0]+.25])
+
+    plt.subplots_adjust(wspace=2)  # Increase this value for more space
+
+    fig.text(0.02, 0.5, 'First Finger Position', va='center', rotation='vertical', fontsize = 15)
+    fig.text(.5, 0.5, 'Second Finger Position', va='center', rotation='vertical', fontsize = 15)
+
+    plt.tight_layout(rect=[0.03, 0, 1, 0.95])  # Shrink plot area to leave space
+    
+    
+    

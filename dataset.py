@@ -3,23 +3,28 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-def load_data(fpath = 'Z_Joker_2025-01-09_Run-002.mat', downsample = 10, velocity = True):
-    """Load the chosen data
+def load_data(fpath = 'Z_Joker_2025-01-09_Run-002.mat', downsample = 10, velocity = True, lag = None):
+    """Load the chosed data
 
     Returns:
         EMG_continuous: EMG data, shape [timepoints, features]
         kin_continuous: Kinematics, shape [timepoints, kinematic dimensions]
     """
-    mat = scipy.io.loadmat(fpath)
-    dt = .001
 
-    inds = mat['z']['TrialSuccess'][0, :].astype(bool)
+    if fpath[-3:] == "mat":
+        mat = scipy.io.loadmat(fpath)
+        dt = .001
+
+        inds = mat['z']['TrialSuccess'][0, :].astype(bool)
+        
+        kin_trials = mat['z'][0, :]['FingerAnglesTIMRL'][inds] #shape (n_trials, ), filtering out unsuccessful trials
+        kin_continuous = np.vstack(kin_trials)[:, [1, 3]] 
     
-    kin_trials = mat['z'][0, :]['FingerAnglesTIMRL'][inds] #shape (n_trials, ), filtering out unsuccessful trials
-    kin_continuous = np.vstack(kin_trials)[:, [1, 3]] 
-   
-    EMG_trials = mat['z'][0, :]['NeuralFeature'][inds]
-    EMG_continuous = np.vstack(EMG_trials)[:, :16]
+        EMG_trials = mat['z'][0, :]['NeuralFeature'][inds]
+        EMG_continuous = np.vstack(EMG_trials)[:, :16]
+    elif fpath[-3:] == "npy":
+        pass
+    
     
     if downsample is not None: 
         t = EMG_continuous.shape[0]
@@ -30,6 +35,10 @@ def load_data(fpath = 'Z_Joker_2025-01-09_Run-002.mat', downsample = 10, velocit
         vel = np.diff(kin_continuous, axis = 0)/dt
         kin_continuous = np.hstack([kin_continuous[1:, :], vel])
         EMG_continuous = EMG_continuous[1:, :]
+        
+    if lag is not None:
+        kin_continuous = kin_continuous[lag:, :]
+        EMG_continuous = EMG_continuous[:-lag, :]
 
     
     assert EMG_continuous.shape[0] == kin_continuous.shape[0]
