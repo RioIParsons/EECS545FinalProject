@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from matplotlib import pyplot as plt
 
 from abc import ABC, abstractmethod
 import numpy as np
@@ -89,10 +90,12 @@ class KalmanFilter(Model):
         y_pred[:, 0] = y_init
             
         Pt = self.W
+        self.Kt_gains = []
         for i in range(1, t):
             ylast = self.A @ y_pred[:, i-1]
             plast = self.A @ Pt @ self.A.T + self.W
             Kt = plast @ self.C.T @ np.linalg.pinv(self.C @ plast @ self.C.T + self.Q)
+            self.Kt_gains.append(np.linalg.norm(Kt))
             y_pred[:, i] = ylast + Kt @(X[:, i] - self.C @ ylast)
             Pt = (np.eye(self.C.shape[1]) - Kt @ self.C) @ plast
             
@@ -312,7 +315,7 @@ class LSTM(nn.Module):
         
 
 
-    def run_model(self, X):
+    def run_model(self, X, y_init):
         if self.lstm is None or self.linear is None:
             raise RuntimeError("Model must be trained before inference")
             
@@ -428,7 +431,7 @@ class MLP(nn.Module):
         
 
 
-    def run_model(self, X):
+    def run_model(self, X, y_init):
             
         self.model.eval()
         with torch.no_grad():
@@ -667,6 +670,9 @@ class KalmanNet(Model):
         in_FC4 = torch.cat((out_Sigma, out_FC3), 2)
         out_FC4 = model_components['FC4'](in_FC4)
         h_Sigma = out_FC4
+        if hasattr(self, 'kalman_gains'):
+            self.kalman_gains.append(K_gain.cpu().numpy())
+
 
         return state_posterior, h_Q, h_Sigma, h_S
     
@@ -807,6 +813,8 @@ class KalmanNet(Model):
         
         # Initialize state
         state_posterior = y_init_tensor.unsqueeze(0)  # Add batch dimension
+
+        self.kalman_gains = []
         
         with torch.no_grad():
             for t in range(1, len(X_tensor)):
