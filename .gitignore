@@ -139,3 +139,7 @@ cython_debug/
 # Data
 *.mat
 *.npy
+*.pkl
+knet_luis.py
+debugging.ipynb
+*.svg

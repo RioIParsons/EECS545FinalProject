@@ -1,3 +1,5 @@
+import os
+import pickle
 import scipy
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -23,8 +25,13 @@ def load_data(fpath = 'Z_Joker_2025-01-09_Run-002.mat', downsample = 10, velocit
         EMG_trials = mat['z'][0, :]['NeuralFeature'][inds]
         EMG_continuous = np.vstack(EMG_trials)[:, :16]
     elif fpath[-3:] == "npy":
-        pass
-    
+        ds = np.load(fpath)
+    elif fpath[-3:] == "pkl":
+        dpath = os.path.join('dataset_60.pkl')
+        
+        with open(dpath, 'rb') as f:
+            EMG_continuous, kinematics, _, _ = pickle.load(f)
+            kin_continuous = kinematics[:, :2]
     
     if downsample is not None: 
         t = EMG_continuous.shape[0]
